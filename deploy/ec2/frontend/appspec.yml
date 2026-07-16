@@ -7,31 +7,13 @@ files:
 
 file_exists_behavior: OVERWRITE
 
-permissions:
-  - object: /opt/coditude/frontend
-    owner: coditude
-    group: coditude
-    mode: "0755"
-    type:
-      - directory
-  - object: /opt/coditude/frontend/current
-    owner: coditude
-    group: coditude
-    mode: "0755"
-    type:
-      - directory
-
 hooks:
   BeforeInstall:
-    - location: scripts/before_install.sh
-      timeout: 120
-      runas: root
-  AfterInstall:
-    - location: scripts/after_install.sh
+    - location: scripts/deploy.sh
       timeout: 120
       runas: root
   ApplicationStart:
-    - location: scripts/start.sh
+    - location: scripts/deploy.sh
       timeout: 120
       runas: root
   ValidateService:
