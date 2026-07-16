@@ -1,0 +1,154 @@
+name: Deploy ECS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub environment and AWS deployment stage
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-ecs-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build, publish, and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: ${{ inputs.environment }}
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      PROJECT_NAME: coditude
+      ENVIRONMENT: ${{ inputs.environment }}
+
+    steps:
+      - name: Check out application
+        uses: actions/checkout@v6
+
+      - name: Check out infrastructure
+        uses: actions/checkout@v6
+        with:
+          repository: ali509/coditude-infrastructure
+          path: infrastructure-repository
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: github-ecs-${{ github.run_id }}
+
+      - name: Read infrastructure outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          output() {
+            aws cloudformation describe-stacks \
+              --stack-name "$1" \
+              --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue | [0]" \
+              --output text
+          }
+
+          network_stack="${PROJECT_NAME}-${ENVIRONMENT}-network"
+          security_stack="${PROJECT_NAME}-${ENVIRONMENT}-security"
+          database_stack="${PROJECT_NAME}-${ENVIRONMENT}-database"
+          foundation_stack="${PROJECT_NAME}-${ENVIRONMENT}-container-foundation"
+
+          {
+            echo "VPC_ID=$(output "$network_stack" VpcId)"
+            echo "PUBLIC_SUBNET_IDS=$(output "$network_stack" PublicSubnetIds)"
+            echo "APPLICATION_SUBNET_IDS=$(output "$network_stack" ApplicationSubnetIds)"
+            echo "PUBLIC_ALB_SG_ID=$(output "$security_stack" PublicLoadBalancerSecurityGroupId)"
+            echo "FRONTEND_SG_ID=$(output "$security_stack" FrontendSecurityGroupId)"
+            echo "BACKEND_SG_ID=$(output "$security_stack" BackendSecurityGroupId)"
+            echo "DB_HOST=$(output "$database_stack" DatabaseEndpointAddress)"
+            echo "DB_PORT=$(output "$database_stack" DatabaseEndpointPort)"
+            echo "DB_NAME=$(output "$database_stack" DatabaseName)"
+            echo "DB_SECRET_ARN=$(output "$database_stack" DatabaseMasterUserSecretArn)"
+            echo "CLUSTER_ARN=$(output "$foundation_stack" ClusterArn)"
+            echo "CLUSTER_NAME=$(output "$foundation_stack" ClusterName)"
+            echo "FRONTEND_REPOSITORY=$(output "$foundation_stack" FrontendRepositoryUri)"
+            echo "BACKEND_REPOSITORY=$(output "$foundation_stack" BackendRepositoryUri)"
+            echo "FRONTEND_LOG_GROUP=$(output "$foundation_stack" FrontendLogGroupName)"
+            echo "BACKEND_LOG_GROUP=$(output "$foundation_stack" BackendLogGroupName)"
+            echo "TASK_EXECUTION_ROLE_ARN=$(output "$foundation_stack" TaskExecutionRoleArn)"
+            echo "PRIVATE_DNS_NAMESPACE_ID=$(output "$foundation_stack" PrivateDnsNamespaceId)"
+          } >> "$GITHUB_ENV"
+
+      - name: Sign in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/backend
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.BACKEND_REPOSITORY }}:${{ github.sha }}
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/frontend
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.FRONTEND_REPOSITORY }}:${{ github.sha }}
+
+      - name: Deploy ECS application stack
+        shell: bash
+        run: |
+          aws cloudformation deploy \
+            --stack-name "${PROJECT_NAME}-${ENVIRONMENT}-container-application" \
+            --template-file infrastructure-repository/infrastructure/nested/container-application.yaml \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              ProjectName="$PROJECT_NAME" \
+              Environment="$ENVIRONMENT" \
+              VpcId="$VPC_ID" \
+              PublicSubnetIds="$PUBLIC_SUBNET_IDS" \
+              ApplicationSubnetIds="$APPLICATION_SUBNET_IDS" \
+              PublicLoadBalancerSecurityGroupId="$PUBLIC_ALB_SG_ID" \
+              FrontendSecurityGroupId="$FRONTEND_SG_ID" \
+              BackendSecurityGroupId="$BACKEND_SG_ID" \
+              DatabaseEndpointAddress="$DB_HOST" \
+              DatabaseEndpointPort="$DB_PORT" \
+              DatabaseName="$DB_NAME" \
+              DatabaseMasterUserSecretArn="$DB_SECRET_ARN" \
+              ClusterArn="$CLUSTER_ARN" \
+              ClusterName="$CLUSTER_NAME" \
+              FrontendRepositoryUri="$FRONTEND_REPOSITORY" \
+              BackendRepositoryUri="$BACKEND_REPOSITORY" \
+              FrontendLogGroupName="$FRONTEND_LOG_GROUP" \
+              BackendLogGroupName="$BACKEND_LOG_GROUP" \
+              TaskExecutionRoleArn="$TASK_EXECUTION_ROLE_ARN" \
+              PrivateDnsNamespaceId="$PRIVATE_DNS_NAMESPACE_ID" \
+              FrontendImageTag="${GITHUB_SHA}" \
+              BackendImageTag="${GITHUB_SHA}" \
+              FrontendDesiredCount=1 \
+              FrontendMaximumCount=3 \
+              BackendDesiredCount=1 \
+              BackendMaximumCount=3
+
+      - name: Show application URL
+        shell: bash
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "${PROJECT_NAME}-${ENVIRONMENT}-container-application" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApplicationUrl'].OutputValue | [0]" \
+            --output text
