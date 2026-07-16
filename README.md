@@ -180,12 +180,10 @@ build/codedeploy/coditude-backend.zip
 
 Each deployment follows this lifecycle:
 
-1. `BeforeInstall` stops the existing service and prepares a clean release
-   directory.
-2. CodeDeploy copies the immutable application artifact.
-3. `AfterInstall` installs the `systemd` unit and any runtime dependencies.
-4. `ApplicationStart` starts or restarts the service.
-5. `ValidateService` checks the local health endpoint.
+1. `deploy.sh` stops the old service and prepares the application directory.
+2. CodeDeploy copies the new application files.
+3. The same `deploy.sh` installs dependencies and starts the service.
+4. `validate.sh` checks the health endpoint and fails the deployment if needed.
 
 The frontend requires `/etc/coditude-frontend.env` containing `BACKEND_URL`.
 The backend requires `/etc/coditude-backend.env` containing its environment and
