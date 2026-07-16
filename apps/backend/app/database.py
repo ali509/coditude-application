@@ -1,6 +1,9 @@
+import json
 import os
 from urllib.parse import quote_plus
 
+import boto3
+from botocore.config import Config
 from psycopg import Error as PsycopgError
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
@@ -34,22 +37,48 @@ class Database:
         if database_url:
             return database_url
 
-        required_variables = (
-            "DB_HOST",
-            "DB_NAME",
-            "DB_USERNAME",
-            "DB_PASSWORD",
-        )
-        if not all(os.getenv(variable) for variable in required_variables):
+        host = os.getenv("DB_HOST")
+        name = os.getenv("DB_NAME")
+        if not host or not name:
             return None
 
-        username = quote_plus(os.environ["DB_USERNAME"])
-        password = quote_plus(os.environ["DB_PASSWORD"])
-        host = os.environ["DB_HOST"]
+        credentials = Database._credentials()
+        if credentials is None:
+            return None
+
+        username = quote_plus(credentials["username"])
+        password = quote_plus(credentials["password"])
         port = os.getenv("DB_PORT", "5432")
-        name = os.environ["DB_NAME"]
 
         return f"postgresql://{username}:{password}@{host}:{port}/{name}"
+
+    @staticmethod
+    def _credentials() -> dict[str, str] | None:
+        username = os.getenv("DB_USERNAME")
+        password = os.getenv("DB_PASSWORD")
+        if username and password:
+            return {"username": username, "password": password}
+
+        secret_arn = os.getenv("DB_SECRET_ARN")
+        if not secret_arn:
+            return None
+
+        client = boto3.client(
+            "secretsmanager",
+            region_name=os.getenv("AWS_REGION"),
+            config=Config(
+                connect_timeout=3,
+                read_timeout=5,
+                retries={"total_max_attempts": 2, "mode": "standard"},
+            ),
+        )
+        response = client.get_secret_value(SecretId=secret_arn)
+        secret = json.loads(response["SecretString"])
+
+        return {
+            "username": secret["username"],
+            "password": secret["password"],
+        }
 
     def close(self) -> None:
         if self._pool is not None:

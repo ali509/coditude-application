@@ -30,7 +30,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
-for variable in DB_HOST DB_PORT DB_NAME DB_USERNAME DB_PASSWORD APP_ENV; do
+for variable in DB_HOST DB_PORT DB_NAME DB_SECRET_ARN APP_ENV; do
   if ! grep --quiet "^${variable}=" "${ENV_FILE}"; then
     echo "Missing ${variable} in ${ENV_FILE}." >&2
     exit 1
