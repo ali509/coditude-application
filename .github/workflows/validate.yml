@@ -90,3 +90,27 @@ jobs:
 
       - name: Build frontend image
         run: docker build --tag coditude-frontend:validation apps/frontend
+
+  codedeploy:
+    name: CodeDeploy bundles
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Build deployment bundles
+        run: make codedeploy-bundles
+
+      - name: Inspect bundle contents
+        run: |
+          unzip -l build/codedeploy/coditude-frontend.zip
+          unzip -l build/codedeploy/coditude-backend.zip

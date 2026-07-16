@@ -1,6 +1,6 @@
 COMPOSE := docker compose
 
-.PHONY: backend-test frontend-check check compose-config container-build up down logs ps clean
+.PHONY: backend-test frontend-check check compose-config container-build codedeploy-bundles up down logs ps clean
 
 backend-test:
 	cd apps/backend && .venv/bin/python -m pytest -v
@@ -16,6 +16,9 @@ compose-config:
 container-build:
 	docker build --tag coditude-backend:local apps/backend
 	docker build --tag coditude-frontend:local apps/frontend
+
+codedeploy-bundles:
+	./scripts/build-codedeploy-bundles.sh
 
 up:
 	$(COMPOSE) up --build --detach

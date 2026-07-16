@@ -1,0 +1,27 @@
+[Unit]
+Description=Coditude Next.js frontend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coditude
+Group=coditude
+WorkingDirectory=/opt/coditude/frontend/current
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=HOSTNAME=0.0.0.0
+Environment=PORT=3000
+EnvironmentFile=/etc/coditude-frontend.env
+ExecStart=/usr/bin/node-22 server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/coditude/frontend.log
+StandardError=append:/var/log/coditude/frontend.log
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
