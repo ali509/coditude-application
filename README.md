@@ -147,3 +147,47 @@ Application deployment will use an immutable commit SHA as the image tag. The
 same tested image is promoted through environments; staging and production
 deployments require environment approval. Infrastructure changes are reviewed
 and deployed independently from the infrastructure repository.
+
+## EC2 CodeDeploy Bundles
+
+The non-containerized deployment path produces separate CodeDeploy revisions
+for the frontend and backend:
+
+```text
+deploy/ec2/
+  frontend/
+    appspec.yml
+    scripts/
+    systemd/
+  backend/
+    appspec.yml
+    scripts/
+    systemd/
+```
+
+Build both revision archives locally:
+
+```bash
+make codedeploy-bundles
+```
+
+The generated files are ignored by Git:
+
+```text
+build/codedeploy/coditude-frontend.zip
+build/codedeploy/coditude-backend.zip
+```
+
+Each deployment follows this lifecycle:
+
+1. `BeforeInstall` stops the existing service and prepares a clean release
+   directory.
+2. CodeDeploy copies the immutable application artifact.
+3. `AfterInstall` installs the `systemd` unit and any runtime dependencies.
+4. `ApplicationStart` starts or restarts the service.
+5. `ValidateService` checks the local health endpoint.
+
+The frontend requires `/etc/coditude-frontend.env` containing `BACKEND_URL`.
+The backend requires `/etc/coditude-backend.env` containing its environment and
+database settings. These files are infrastructure/runtime responsibilities and
+are never included in a deployment ZIP.
