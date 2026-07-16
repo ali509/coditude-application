@@ -1,0 +1,78 @@
+COMPOSE := docker compose
+AWS_PROFILE ?= coditude-dev
+AWS_REGION ?= ap-south-1
+ROOT_TEMPLATE := infrastructure/root.yaml
+NETWORK_TEMPLATE := infrastructure/nested/network.yaml
+SECURITY_TEMPLATE := infrastructure/nested/security.yaml
+DATABASE_TEMPLATE := infrastructure/nested/database.yaml
+CONTAINER_FOUNDATION_TEMPLATE := infrastructure/nested/container-foundation.yaml
+CONTAINER_APPLICATION_TEMPLATE := infrastructure/nested/container-application.yaml
+
+.PHONY: backend-test frontend-check check compose-config infra-lint root-lint network-validate security-validate database-validate container-foundation-validate container-application-validate infra-validate up down logs ps clean
+
+backend-test:
+	cd apps/backend && .venv/bin/python -m pytest -v
+
+frontend-check:
+	cd apps/frontend && npm run lint && npm run build
+
+check: backend-test frontend-check
+
+compose-config:
+	$(COMPOSE) config --quiet
+
+infra-lint:
+	cfn-lint --format json --regions $(AWS_REGION) \
+		--template $(ROOT_TEMPLATE) $(NETWORK_TEMPLATE) $(SECURITY_TEMPLATE) \
+		$(DATABASE_TEMPLATE) $(CONTAINER_FOUNDATION_TEMPLATE) \
+		$(CONTAINER_APPLICATION_TEMPLATE)
+
+root-lint:
+	cfn-lint --regions $(AWS_REGION) --template $(ROOT_TEMPLATE)
+
+network-validate:
+	aws cloudformation validate-template \
+		--template-body file://$(NETWORK_TEMPLATE) \
+		--profile $(AWS_PROFILE) \
+		--region $(AWS_REGION)
+
+security-validate:
+	aws cloudformation validate-template \
+		--template-body file://$(SECURITY_TEMPLATE) \
+		--profile $(AWS_PROFILE) \
+		--region $(AWS_REGION)
+
+database-validate:
+	aws cloudformation validate-template \
+		--template-body file://$(DATABASE_TEMPLATE) \
+		--profile $(AWS_PROFILE) \
+		--region $(AWS_REGION)
+
+container-foundation-validate:
+	aws cloudformation validate-template \
+		--template-body file://$(CONTAINER_FOUNDATION_TEMPLATE) \
+		--profile $(AWS_PROFILE) \
+		--region $(AWS_REGION)
+
+container-application-validate:
+	aws cloudformation validate-template \
+		--template-body file://$(CONTAINER_APPLICATION_TEMPLATE) \
+		--profile $(AWS_PROFILE) \
+		--region $(AWS_REGION)
+
+infra-validate: infra-lint network-validate security-validate database-validate container-foundation-validate container-application-validate
+
+up:
+	$(COMPOSE) up --build --detach
+
+down:
+	$(COMPOSE) down
+
+logs:
+	$(COMPOSE) logs --follow
+
+ps:
+	$(COMPOSE) ps
+
+clean:
+	$(COMPOSE) down --volumes --remove-orphans
