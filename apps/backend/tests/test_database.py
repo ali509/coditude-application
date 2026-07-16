@@ -12,7 +12,11 @@ def test_connection_string_uses_runtime_secret(
     monkeypatch.setenv("DB_HOST", "database.internal")
     monkeypatch.setenv("DB_PORT", "5432")
     monkeypatch.setenv("DB_NAME", "coditude")
-    monkeypatch.setenv("DB_SECRET_ARN", "database-secret")
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv(
+        "DB_SECRET_ARN",
+        "arn:aws:secretsmanager:ap-south-1:123456789012:secret:database-secret",
+    )
 
     secrets_manager = Mock()
     secrets_manager.get_secret_value.return_value = {
@@ -20,18 +24,20 @@ def test_connection_string_uses_runtime_secret(
             '{"username": "dbadmin", "password": "example-password"}'
         )
     }
-    monkeypatch.setattr(
-        "app.database.boto3.client",
-        lambda *args, **kwargs: secrets_manager,
-    )
+    boto3_client = Mock(return_value=secrets_manager)
+    monkeypatch.setattr("app.database.boto3.client", boto3_client)
 
     assert Database._connection_string() == (
         "postgresql://dbadmin:example-password"
         "@database.internal:5432/coditude"
     )
     secrets_manager.get_secret_value.assert_called_once_with(
-        SecretId="database-secret"
+        SecretId=(
+            "arn:aws:secretsmanager:ap-south-1:"
+            "123456789012:secret:database-secret"
+        )
     )
+    assert boto3_client.call_args.kwargs["region_name"] == "ap-south-1"
 
 
 def test_connection_string_uses_local_credentials(

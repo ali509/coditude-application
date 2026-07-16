@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 from urllib.parse import quote_plus
@@ -63,9 +65,12 @@ class Database:
         if not secret_arn:
             return None
 
+        arn_parts = secret_arn.split(":", 4)
+        arn_region = arn_parts[3] if len(arn_parts) == 5 else None
+        region = os.getenv("AWS_REGION") or arn_region
         client = boto3.client(
             "secretsmanager",
-            region_name=os.getenv("AWS_REGION"),
+            region_name=region,
             config=Config(
                 connect_timeout=3,
                 read_timeout=5,
