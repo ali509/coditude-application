@@ -100,8 +100,9 @@ npm run build
 | `DB_HOST` | RDS endpoint used when `DATABASE_URL` is not supplied |
 | `DB_PORT` | PostgreSQL port, defaulting to `5432` |
 | `DB_NAME` | PostgreSQL database name |
-| `DB_USERNAME` | Database username injected from Secrets Manager |
-| `DB_PASSWORD` | Database password injected from Secrets Manager |
+| `DB_SECRET_ARN` | RDS-managed secret read by the EC2 backend at startup |
+| `DB_USERNAME` | Database username used for local development |
+| `DB_PASSWORD` | Database password used for local development |
 | `DB_POOL_MAX_SIZE` | Maximum backend database connections per container |
 | `BACKEND_URL` | Internal URL used by the Next.js server |
 
