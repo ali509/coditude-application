@@ -1,8 +1,12 @@
-# Coditude DevOps Assessment
+# Coditude Application
 
-This repository contains a small deployable application used to demonstrate
-containerization, orchestration, infrastructure as code, CI/CD, security, and
-operational readiness.
+This repository contains the Coditude assessment application. It is owned by
+the application team and contains the Next.js frontend, FastAPI backend, local
+PostgreSQL environment, tests, Dockerfiles, and application delivery workflows.
+
+AWS infrastructure is maintained separately in the
+[`coditude-infrastructure`](https://github.com/ali509/coditude-infrastructure)
+repository.
 
 ## Local Architecture
 
@@ -105,71 +109,41 @@ The committed `.env.example` contains placeholders only. `.env` is ignored by
 Git and is intended only for local development. Cloud deployments will use AWS
 Secrets Manager or Parameter Store rather than environment files.
 
-## CloudFormation Architecture
+## Continuous Integration
 
-[`infrastructure/root.yaml`](infrastructure/root.yaml) is the deployment entry
-point. It passes nested-stack outputs directly into dependent templates:
+The credential-free GitHub Actions workflow at
+`.github/workflows/validate.yml` runs on pushes to `main`, pull requests, and
+manual dispatches. It performs:
 
-1. `network.yaml` creates the VPC, subnets, and routing.
-2. `security.yaml` creates the workload security groups.
-3. `database.yaml` creates the encrypted PostgreSQL RDS database.
-4. `container-foundation.yaml` creates the shared ECS, ECR, logging,
-   service discovery, IAM, and private endpoint resources.
-5. `container-application.yaml` creates the ALB, task definitions,
-   Fargate services, private backend discovery, and service autoscaling.
+- Python dependency installation and backend tests
+- Next.js dependency installation, linting, and production build
+- Docker Compose validation
+- Independent frontend and backend container builds
 
-The container platform is split because ECR repositories must exist before the
-first immutable application images can be pushed. The application stack can be
-enabled after those image tags exist.
+The validation workflow has read-only repository permissions and does not
+authenticate to AWS or deploy an application.
 
-The root template defaults to network and security only. The following
-parameters explicitly enable billable layers:
+## Infrastructure Contract
 
-| Parameter | Default | Effect |
-| --- | --- | --- |
-| `DeployDatabase` | `false` | Creates RDS and its managed secret |
-| `DeployContainerFoundation` | `false` | Creates ECS, ECR, logs and discovery |
-| `EnablePrivateEndpoints` | `false` | Creates billable interface endpoints |
-| `DeployContainerApplication` | `false` | Creates ALB and Fargate services |
+The application repository does not provision AWS resources. Deployment
+workflows consume environment-specific values created by the infrastructure
+repository:
 
-Validate the templates locally:
+| Value | Purpose |
+| --- | --- |
+| `AWS_REGION` | Region containing the target platform |
+| `AWS_ROLE_ARN` | GitHub OIDC deployment role |
+| `ECS_CLUSTER_NAME` | ECS cluster receiving the release |
+| `FRONTEND_SERVICE_NAME` | Frontend ECS service |
+| `BACKEND_SERVICE_NAME` | Backend ECS service |
+| `FRONTEND_ECR_REPOSITORY` | Frontend ECR repository URI |
+| `BACKEND_ECR_REPOSITORY` | Backend ECR repository URI |
 
-```bash
-make infra-lint
-make root-lint
-make database-validate
-make container-foundation-validate
-make container-application-validate
-```
+These values belong in GitHub Environments named `dev`, `staging`, and `prod`.
+They must not be hard-coded in application source or stored as long-lived AWS
+access keys.
 
-Before deploying the root template, package the local nested template paths
-into S3 URLs:
-
-```bash
-aws cloudformation package \
-  --template-file infrastructure/root.yaml \
-  --s3-bucket YOUR_ARTIFACT_BUCKET \
-  --output-template-file infrastructure/packaged-root.yaml
-```
-
-`packaged-root.yaml` is generated deployment output and should not be manually
-edited.
-
-The database template uses RDS-managed credentials. RDS generates the master
-password and stores it in Secrets Manager; no password is committed to the
-repository or passed as a CloudFormation parameter.
-
-For cost-controlled testing, `dev` and `staging` database resources use
-`DeletionPolicy: Delete` and do not preserve a final snapshot when their stack
-is deleted. The `prod` database resource uses `DeletionPolicy: Snapshot` and
-deletion protection to preserve production data.
-
-The container foundation supports a `single` interface endpoint subnet for
-lower-cost non-production testing and an `all` strategy for production
-resilience. Interface endpoints incur hourly and data-processing charges when
-deployed.
-
-The container application supports HTTP for temporary development testing and
-HTTPS when an ACM certificate ARN is supplied. Production validation requires
-an ACM certificate. The backend receives database credentials through ECS
-Secrets Manager injection and constructs its connection string at runtime.
+Application deployment will use an immutable commit SHA as the image tag. The
+same tested image is promoted through environments; staging and production
+deployments require environment approval. Infrastructure changes are reviewed
+and deployed independently from the infrastructure repository.
