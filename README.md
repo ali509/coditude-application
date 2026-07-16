@@ -173,3 +173,18 @@ The container application supports HTTP for temporary development testing and
 HTTPS when an ACM certificate ARN is supplied. Production validation requires
 an ACM certificate. The backend receives database credentials through ECS
 Secrets Manager injection and constructs its connection string at runtime.
+
+## Continuous Integration
+
+The credential-free GitHub Actions workflow at
+`.github/workflows/validate.yml` runs on pushes to `main`, pull requests, and
+manual dispatches. It performs:
+
+- Python dependency installation and backend tests
+- Next.js dependency installation, linting, and production build
+- CloudFormation linting and Guard policy checks
+- Docker Compose validation
+- Independent frontend and backend container builds
+
+The workflow has read-only repository permissions and does not authenticate to
+AWS or deploy infrastructure.
