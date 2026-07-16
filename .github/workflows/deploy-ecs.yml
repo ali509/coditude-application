@@ -10,6 +10,11 @@ on:
         type: choice
         options:
           - dev
+      deploy_services:
+        description: Update existing ECS services after publishing images
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -36,12 +41,6 @@ jobs:
       - name: Check out application
         uses: actions/checkout@v6
 
-      - name: Check out infrastructure
-        uses: actions/checkout@v6
-        with:
-          repository: ali509/coditude-infrastructure
-          path: infrastructure-repository
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -61,30 +60,14 @@ jobs:
               --output text
           }
 
-          network_stack="${PROJECT_NAME}-${ENVIRONMENT}-network"
-          security_stack="${PROJECT_NAME}-${ENVIRONMENT}-security"
-          database_stack="${PROJECT_NAME}-${ENVIRONMENT}-database"
           foundation_stack="${PROJECT_NAME}-${ENVIRONMENT}-container-foundation"
 
           {
-            echo "VPC_ID=$(output "$network_stack" VpcId)"
-            echo "PUBLIC_SUBNET_IDS=$(output "$network_stack" PublicSubnetIds)"
-            echo "APPLICATION_SUBNET_IDS=$(output "$network_stack" ApplicationSubnetIds)"
-            echo "PUBLIC_ALB_SG_ID=$(output "$security_stack" PublicLoadBalancerSecurityGroupId)"
-            echo "FRONTEND_SG_ID=$(output "$security_stack" FrontendSecurityGroupId)"
-            echo "BACKEND_SG_ID=$(output "$security_stack" BackendSecurityGroupId)"
-            echo "DB_HOST=$(output "$database_stack" DatabaseEndpointAddress)"
-            echo "DB_PORT=$(output "$database_stack" DatabaseEndpointPort)"
-            echo "DB_NAME=$(output "$database_stack" DatabaseName)"
-            echo "DB_SECRET_ARN=$(output "$database_stack" DatabaseMasterUserSecretArn)"
-            echo "CLUSTER_ARN=$(output "$foundation_stack" ClusterArn)"
             echo "CLUSTER_NAME=$(output "$foundation_stack" ClusterName)"
             echo "FRONTEND_REPOSITORY=$(output "$foundation_stack" FrontendRepositoryUri)"
             echo "BACKEND_REPOSITORY=$(output "$foundation_stack" BackendRepositoryUri)"
-            echo "FRONTEND_LOG_GROUP=$(output "$foundation_stack" FrontendLogGroupName)"
-            echo "BACKEND_LOG_GROUP=$(output "$foundation_stack" BackendLogGroupName)"
-            echo "TASK_EXECUTION_ROLE_ARN=$(output "$foundation_stack" TaskExecutionRoleArn)"
-            echo "PRIVATE_DNS_NAMESPACE_ID=$(output "$foundation_stack" PrivateDnsNamespaceId)"
+            echo "FRONTEND_SERVICE=${PROJECT_NAME}-${ENVIRONMENT}-frontend"
+            echo "BACKEND_SERVICE=${PROJECT_NAME}-${ENVIRONMENT}-backend"
           } >> "$GITHUB_ENV"
 
       - name: Sign in to Amazon ECR
@@ -109,46 +92,100 @@ jobs:
           push: true
           tags: ${{ env.FRONTEND_REPOSITORY }}:${{ github.sha }}
 
-      - name: Deploy ECS application stack
+      - name: Update backend service
+        if: ${{ inputs.deploy_services }}
         shell: bash
         run: |
-          aws cloudformation deploy \
-            --stack-name "${PROJECT_NAME}-${ENVIRONMENT}-container-application" \
-            --template-file infrastructure-repository/infrastructure/nested/container-application.yaml \
-            --capabilities CAPABILITY_IAM \
-            --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              ProjectName="$PROJECT_NAME" \
-              Environment="$ENVIRONMENT" \
-              VpcId="$VPC_ID" \
-              PublicSubnetIds="$PUBLIC_SUBNET_IDS" \
-              ApplicationSubnetIds="$APPLICATION_SUBNET_IDS" \
-              PublicLoadBalancerSecurityGroupId="$PUBLIC_ALB_SG_ID" \
-              FrontendSecurityGroupId="$FRONTEND_SG_ID" \
-              BackendSecurityGroupId="$BACKEND_SG_ID" \
-              DatabaseEndpointAddress="$DB_HOST" \
-              DatabaseEndpointPort="$DB_PORT" \
-              DatabaseName="$DB_NAME" \
-              DatabaseMasterUserSecretArn="$DB_SECRET_ARN" \
-              ClusterArn="$CLUSTER_ARN" \
-              ClusterName="$CLUSTER_NAME" \
-              FrontendRepositoryUri="$FRONTEND_REPOSITORY" \
-              BackendRepositoryUri="$BACKEND_REPOSITORY" \
-              FrontendLogGroupName="$FRONTEND_LOG_GROUP" \
-              BackendLogGroupName="$BACKEND_LOG_GROUP" \
-              TaskExecutionRoleArn="$TASK_EXECUTION_ROLE_ARN" \
-              PrivateDnsNamespaceId="$PRIVATE_DNS_NAMESPACE_ID" \
-              FrontendImageTag="${GITHUB_SHA}" \
-              BackendImageTag="${GITHUB_SHA}" \
-              FrontendDesiredCount=1 \
-              FrontendMaximumCount=3 \
-              BackendDesiredCount=1 \
-              BackendMaximumCount=3
+          set -euo pipefail
 
-      - name: Show application URL
+          current_task_definition=$(aws ecs describe-services \
+            --cluster "$CLUSTER_NAME" \
+            --services "$BACKEND_SERVICE" \
+            --query "services[0].taskDefinition" \
+            --output text)
+
+          aws ecs describe-task-definition \
+            --task-definition "$current_task_definition" \
+            --query taskDefinition \
+            --output json |
+            jq --arg image "${BACKEND_REPOSITORY}:${GITHUB_SHA}" '
+              del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy
+              )
+              | .containerDefinitions |= map(
+                  if .name == "backend" then .image = $image else . end
+                )
+            ' > backend-task-definition.json
+
+          new_task_definition=$(aws ecs register-task-definition \
+            --cli-input-json file://backend-task-definition.json \
+            --query "taskDefinition.taskDefinitionArn" \
+            --output text)
+
+          aws ecs update-service \
+            --cluster "$CLUSTER_NAME" \
+            --service "$BACKEND_SERVICE" \
+            --task-definition "$new_task_definition" \
+            --output json > /dev/null
+
+      - name: Update frontend service
+        if: ${{ inputs.deploy_services }}
         shell: bash
         run: |
-          aws cloudformation describe-stacks \
-            --stack-name "${PROJECT_NAME}-${ENVIRONMENT}-container-application" \
-            --query "Stacks[0].Outputs[?OutputKey=='ApplicationUrl'].OutputValue | [0]" \
-            --output text
+          set -euo pipefail
+
+          current_task_definition=$(aws ecs describe-services \
+            --cluster "$CLUSTER_NAME" \
+            --services "$FRONTEND_SERVICE" \
+            --query "services[0].taskDefinition" \
+            --output text)
+
+          aws ecs describe-task-definition \
+            --task-definition "$current_task_definition" \
+            --query taskDefinition \
+            --output json |
+            jq --arg image "${FRONTEND_REPOSITORY}:${GITHUB_SHA}" '
+              del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy
+              )
+              | .containerDefinitions |= map(
+                  if .name == "frontend" then .image = $image else . end
+                )
+            ' > frontend-task-definition.json
+
+          new_task_definition=$(aws ecs register-task-definition \
+            --cli-input-json file://frontend-task-definition.json \
+            --query "taskDefinition.taskDefinitionArn" \
+            --output text)
+
+          aws ecs update-service \
+            --cluster "$CLUSTER_NAME" \
+            --service "$FRONTEND_SERVICE" \
+            --task-definition "$new_task_definition" \
+            --output json > /dev/null
+
+      - name: Wait for ECS services
+        if: ${{ inputs.deploy_services }}
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER_NAME" \
+            --services "$BACKEND_SERVICE" "$FRONTEND_SERVICE"
+
+      - name: Deployment summary
+        run: |
+          echo "Published image tag: ${GITHUB_SHA}"
+          echo "Backend image: ${BACKEND_REPOSITORY}:${GITHUB_SHA}"
+          echo "Frontend image: ${FRONTEND_REPOSITORY}:${GITHUB_SHA}"
+          echo "Updated ECS services: ${{ inputs.deploy_services }}"
