@@ -1,0 +1,231 @@
+name: Deploy EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub environment and AWS deployment stage
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+      bootstrap:
+        description: Temporarily pause deployment alarms for the first release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-ec2-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build, publish, and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ inputs.environment }}
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      PROJECT_NAME: coditude
+      ENVIRONMENT: ${{ inputs.environment }}
+
+    steps:
+      - name: Check out application
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: github-ec2-${{ github.run_id }}
+
+      - name: Read infrastructure outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          output() {
+            aws cloudformation describe-stacks \
+              --stack-name "$1" \
+              --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue | [0]" \
+              --output text
+          }
+
+          stack_name="${PROJECT_NAME}-${ENVIRONMENT}-ec2-platform"
+
+          {
+            echo "ARTIFACT_BUCKET=$(output "$stack_name" ArtifactBucketName)"
+            echo "APPLICATION_URL=$(output "$stack_name" ApplicationUrl)"
+            echo "BACKEND_APPLICATION=$(output "$stack_name" BackendApplicationName)"
+            echo "BACKEND_DEPLOYMENT_GROUP=$(output "$stack_name" BackendDeploymentGroupName)"
+            echo "FRONTEND_APPLICATION=$(output "$stack_name" FrontendApplicationName)"
+            echo "FRONTEND_DEPLOYMENT_GROUP=$(output "$stack_name" FrontendDeploymentGroupName)"
+            echo "BACKEND_ARTIFACT_KEY=releases/${GITHUB_SHA}/backend.zip"
+            echo "FRONTEND_ARTIFACT_KEY=releases/${GITHUB_SHA}/frontend.zip"
+          } >> "$GITHUB_ENV"
+
+      - name: Build CodeDeploy bundles
+        run: make codedeploy-bundles
+
+      - name: Publish immutable deployment artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          publish_if_missing() {
+            local source_file="$1"
+            local object_key="$2"
+
+            if aws s3api head-object \
+              --bucket "$ARTIFACT_BUCKET" \
+              --key "$object_key" > /dev/null 2>&1; then
+              echo "Artifact already exists: s3://${ARTIFACT_BUCKET}/${object_key}"
+              return
+            fi
+
+            aws s3api put-object \
+              --bucket "$ARTIFACT_BUCKET" \
+              --key "$object_key" \
+              --body "$source_file" > /dev/null
+          }
+
+          publish_if_missing \
+            build/codedeploy/coditude-backend.zip \
+            "$BACKEND_ARTIFACT_KEY"
+          publish_if_missing \
+            build/codedeploy/coditude-frontend.zip \
+            "$FRONTEND_ARTIFACT_KEY"
+
+      - name: Pause deployment alarms for initial release
+        if: ${{ inputs.bootstrap }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          save_and_pause_alarms() {
+            local component="$1"
+            local application="$2"
+            local deployment_group="$3"
+
+            aws deploy get-deployment-group \
+              --application-name "$application" \
+              --deployment-group-name "$deployment_group" \
+              --query deploymentGroupInfo.alarmConfiguration \
+              --output json > "${component}-alarms.json"
+
+            jq '.enabled = false' \
+              "${component}-alarms.json" \
+              > "${component}-alarms-disabled.json"
+
+            aws deploy update-deployment-group \
+              --application-name "$application" \
+              --current-deployment-group-name "$deployment_group" \
+              --alarm-configuration \
+                "file://${component}-alarms-disabled.json" > /dev/null
+          }
+
+          save_and_pause_alarms \
+            backend \
+            "$BACKEND_APPLICATION" \
+            "$BACKEND_DEPLOYMENT_GROUP"
+          save_and_pause_alarms \
+            frontend \
+            "$FRONTEND_APPLICATION" \
+            "$FRONTEND_DEPLOYMENT_GROUP"
+
+      - name: Deploy backend
+        id: backend
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deployment_id=$(aws deploy create-deployment \
+            --application-name "$BACKEND_APPLICATION" \
+            --deployment-group-name "$BACKEND_DEPLOYMENT_GROUP" \
+            --description "Backend release ${GITHUB_SHA}" \
+            --s3-location \
+              "bucket=${ARTIFACT_BUCKET},key=${BACKEND_ARTIFACT_KEY},bundleType=zip" \
+            --query deploymentId \
+            --output text)
+
+          echo "deployment_id=${deployment_id}" >> "$GITHUB_OUTPUT"
+          aws deploy wait deployment-successful \
+            --deployment-id "$deployment_id"
+
+      - name: Deploy frontend
+        id: frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deployment_id=$(aws deploy create-deployment \
+            --application-name "$FRONTEND_APPLICATION" \
+            --deployment-group-name "$FRONTEND_DEPLOYMENT_GROUP" \
+            --description "Frontend release ${GITHUB_SHA}" \
+            --s3-location \
+              "bucket=${ARTIFACT_BUCKET},key=${FRONTEND_ARTIFACT_KEY},bundleType=zip" \
+            --query deploymentId \
+            --output text)
+
+          echo "deployment_id=${deployment_id}" >> "$GITHUB_OUTPUT"
+          aws deploy wait deployment-successful \
+            --deployment-id "$deployment_id"
+
+      - name: Restore deployment alarms
+        if: ${{ always() && inputs.bootstrap }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          restore_alarms() {
+            local component="$1"
+            local application="$2"
+            local deployment_group="$3"
+
+            if [[ ! -f "${component}-alarms.json" ]]; then
+              return
+            fi
+
+            aws deploy update-deployment-group \
+              --application-name "$application" \
+              --current-deployment-group-name "$deployment_group" \
+              --alarm-configuration \
+                "file://${component}-alarms.json" > /dev/null
+          }
+
+          restore_alarms \
+            backend \
+            "$BACKEND_APPLICATION" \
+            "$BACKEND_DEPLOYMENT_GROUP"
+          restore_alarms \
+            frontend \
+            "$FRONTEND_APPLICATION" \
+            "$FRONTEND_DEPLOYMENT_GROUP"
+
+      - name: Deployment summary
+        if: ${{ success() }}
+        run: |
+          {
+            echo "## EC2 deployment"
+            echo
+            echo "- Application: ${APPLICATION_URL}"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Backend deployment: \`${{ steps.backend.outputs.deployment_id }}\`"
+            echo "- Frontend deployment: \`${{ steps.frontend.outputs.deployment_id }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

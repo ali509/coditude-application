@@ -124,6 +124,62 @@ manual dispatches. It performs:
 The validation workflow has read-only repository permissions and does not
 authenticate to AWS or deploy an application.
 
+## AWS Deployment Workflows
+
+Both deployment workflows use GitHub OIDC and the `dev` GitHub Environment.
+Configure these environment variables before running either workflow:
+
+| Variable | Purpose |
+| --- | --- |
+| `AWS_REGION` | AWS Region containing the target platform |
+| `AWS_ROLE_ARN` | GitHub OIDC deployment role created by infrastructure |
+
+No AWS access keys are stored in GitHub.
+
+### ECS Release
+
+Run **Deploy ECS** from the Actions page. The workflow builds Linux AMD64
+frontend and backend images, publishes them to ECR with the commit SHA, and
+updates the existing ECS services. Set `deploy_services` to `false` when only
+publishing images before the ECS application stack exists.
+
+### EC2 CodeDeploy Release
+
+Run **Deploy EC2** from the Actions page after
+`coditude-dev-ec2-platform` is `CREATE_COMPLETE` or `UPDATE_COMPLETE`.
+
+The workflow:
+
+1. Builds frontend and backend CodeDeploy ZIPs.
+2. Reads the artifact bucket, application names, and deployment groups from
+   CloudFormation outputs.
+3. Uploads each artifact under `releases/<commit-sha>/`.
+4. Deploys and validates the backend first.
+5. Deploys and validates the frontend.
+6. Restores CodeDeploy alarm polling even when a bootstrap deployment fails.
+
+Use `bootstrap=true` only for the first release into a newly created EC2
+platform. Empty target groups initially place unhealthy-host alarms in
+`ALARM`; bootstrap mode temporarily pauses deployment alarm polling and
+restores the original configuration afterward. Normal releases use
+`bootstrap=false`.
+
+Verify an EC2 release:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name coditude-dev-ec2-platform \
+  --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' \
+  --output table \
+  --profile coditude-dev \
+  --region ap-south-1
+
+curl http://EC2_ALB_DNS/
+curl http://EC2_ALB_DNS/api/v1/message
+```
+
+The homepage and API response should report `postgresql` as the data source.
+
 ## Infrastructure Contract
 
 The application repository does not provision AWS resources. Deployment
@@ -134,11 +190,6 @@ repository:
 | --- | --- |
 | `AWS_REGION` | Region containing the target platform |
 | `AWS_ROLE_ARN` | GitHub OIDC deployment role |
-| `ECS_CLUSTER_NAME` | ECS cluster receiving the release |
-| `FRONTEND_SERVICE_NAME` | Frontend ECS service |
-| `BACKEND_SERVICE_NAME` | Backend ECS service |
-| `FRONTEND_ECR_REPOSITORY` | Frontend ECR repository URI |
-| `BACKEND_ECR_REPOSITORY` | Backend ECR repository URI |
 
 These values belong in GitHub Environments named `dev`, `staging`, and `prod`.
 They must not be hard-coded in application source or stored as long-lived AWS
