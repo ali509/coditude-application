@@ -138,10 +138,12 @@ No AWS access keys are stored in GitHub.
 
 ### ECS Release
 
-Run **Deploy ECS** from the Actions page. The workflow builds Linux AMD64
-frontend and backend images, publishes them to ECR with the commit SHA, and
-updates the existing ECS services. Set `deploy_services` to `false` when only
-publishing images before the ECS application stack exists.
+Application changes merged to `main` automatically run **Deploy ECS** for the
+`dev` environment. The workflow builds Linux AMD64 frontend and backend images,
+publishes them to ECR with the commit SHA, and updates the existing ECS
+services. It can also be started manually from the Actions page. Set
+`deploy_services` to `false` on a manual run when only publishing images before
+the ECS application stack exists.
 
 ### EC2 CodeDeploy Release
 
