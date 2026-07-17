@@ -1,6 +1,12 @@
 name: Deploy ECS
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/**"
+      - ".github/workflows/deploy-ecs.yml"
   workflow_dispatch:
     inputs:
       environment:
@@ -21,7 +27,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: deploy-ecs-${{ inputs.environment }}
+  group: deploy-ecs-${{ inputs.environment || 'dev' }}
   cancel-in-progress: false
 
 jobs:
@@ -29,13 +35,14 @@ jobs:
     name: Build, publish, and deploy
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment || 'dev' }}
 
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
       PROJECT_NAME: coditude
-      ENVIRONMENT: ${{ inputs.environment }}
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      DEPLOY_SERVICES: ${{ github.event_name == 'push' || inputs.deploy_services }}
 
     steps:
       - name: Check out application
@@ -126,7 +133,7 @@ jobs:
           tags: ${{ env.FRONTEND_REPOSITORY }}:${{ github.sha }}
 
       - name: Update backend service
-        if: ${{ inputs.deploy_services }}
+        if: ${{ env.DEPLOY_SERVICES == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -168,7 +175,7 @@ jobs:
             --output json > /dev/null
 
       - name: Update frontend service
-        if: ${{ inputs.deploy_services }}
+        if: ${{ env.DEPLOY_SERVICES == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -210,7 +217,7 @@ jobs:
             --output json > /dev/null
 
       - name: Wait for ECS services
-        if: ${{ inputs.deploy_services }}
+        if: ${{ env.DEPLOY_SERVICES == 'true' }}
         run: |
           aws ecs wait services-stable \
             --cluster "$CLUSTER_NAME" \
@@ -221,4 +228,4 @@ jobs:
           echo "Published image tag: ${GITHUB_SHA}"
           echo "Backend image: ${BACKEND_REPOSITORY}:${GITHUB_SHA}"
           echo "Frontend image: ${FRONTEND_REPOSITORY}:${GITHUB_SHA}"
-          echo "Updated ECS services: ${{ inputs.deploy_services }}"
+          echo "Updated ECS services: ${DEPLOY_SERVICES}"
