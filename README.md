@@ -8,6 +8,20 @@ AWS infrastructure is maintained separately in the
 [`coditude-infrastructure`](https://github.com/ali509/coditude-infrastructure)
 repository.
 
+## Assessment Status
+
+The application was deployed and tested in AWS in July 2026 using both ECS
+Fargate and non-containerized EC2 with CodeDeploy. The temporary AWS resources
+and endpoints were deleted after validation to avoid ongoing charges.
+
+Deployment workflows are now manual. Validation still runs automatically on
+pull requests and pushes. Before running an AWS deployment again, recreate the
+required infrastructure from the infrastructure repository and configure the
+GitHub `dev` environment with the new AWS Region and OIDC role ARN.
+
+The original assessment question and final submission documents are archived
+separately from this public source repository.
+
 ## Local Architecture
 
 ```text
@@ -138,11 +152,10 @@ No AWS access keys are stored in GitHub.
 
 ### ECS Release
 
-Application changes merged to `main` automatically run **Deploy ECS** for the
-`dev` environment. The workflow builds Linux AMD64 frontend and backend images,
-publishes them to ECR with the commit SHA, and updates the existing ECS
-services. It can also be started manually from the Actions page. Set
-`deploy_services` to `false` on a manual run when only publishing images before
+Run **Deploy ECS** manually from the Actions page after the ECS foundation and
+application stacks exist. The workflow builds Linux AMD64 frontend and backend
+images, publishes them to ECR with the commit SHA, and updates the existing ECS
+services. Set `deploy_services` to `false` when only publishing images before
 the ECS application stack exists.
 
 ### EC2 CodeDeploy Release
