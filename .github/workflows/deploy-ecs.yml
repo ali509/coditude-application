@@ -1,12 +1,6 @@
 name: Deploy ECS
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "apps/**"
-      - ".github/workflows/deploy-ecs.yml"
   workflow_dispatch:
     inputs:
       environment:
